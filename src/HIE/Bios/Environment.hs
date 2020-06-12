@@ -123,12 +123,25 @@ setHiDir f d = d { hiDir      = Just f}
 addCmdOpts :: (GhcMonad m)
            => [String] -> DynFlags -> m (DynFlags, [G.Target])
 addCmdOpts cmdOpts df1 = do
-  (df2, leftovers', _warns) <- G.parseDynamicFlags df1 (map G.noLoc cmdOpts)
+  -- liftIO $ print cmdOpts
+  (df2, leftovers'', _warns) <- G.parseDynamicFlags df1 (map G.noLoc cmdOpts)
+
+  -- remove any RTS flags from the leftovers
+  let leftovers' = go False (G.unLoc <$> leftovers'')
+      go _     []          = []
+      go _     ("+RTS":xs) = go True xs
+      go True  ("-RTS":xs) = go False xs
+      go True  (_:xs)      = go True xs
+      go False (x:xs)      = x : go False xs
+
+  -- liftIO $ putStrLn "leftovers'':" >> print (G.unLoc <$> leftovers'')
+  -- liftIO $ putStrLn "leftovers':" >> print leftovers'
+
   -- parse targets from ghci-scripts. Only extract targets that have been ":add"'ed.
   additionalTargets <- concat <$> mapM (liftIO . getTargetsFromGhciScript) (ghciScripts df2)
 
   -- leftovers contains all Targets from the command line
-  let leftovers = leftovers' ++ map G.noLoc additionalTargets
+  let leftovers = leftovers' ++ additionalTargets
 
   let
      -- To simplify the handling of filepaths, we normalise all filepaths right
@@ -148,7 +161,7 @@ addCmdOpts cmdOpts df1 = do
 #endif
           cur_dir = '.' : [pathSeparator]
           nfp = normalise fp
-    normal_fileish_paths = map (normalise_hyp . G.unLoc) leftovers
+    normal_fileish_paths = map normalise_hyp leftovers
   let
    (srcs, objs) = partition_args normal_fileish_paths [] []
    df3 = df2 { ldInputs = map (FileOption "") objs ++ ldInputs df2 }

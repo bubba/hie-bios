@@ -35,7 +35,7 @@ debugInfo fp cradle = unlines <$> do
     conf <- findConfig canonFp
     crdl <- findCradle' canonFp
     case res of
-      CradleSuccess (ComponentOptions gopts croot deps) -> do
+      CradleSuccess (ComponentOptions gopts croot deps libDir) -> do
         mglibdir <- liftIO getSystemLibDir
         return [
             "Root directory:      " ++ rootDir
@@ -45,6 +45,7 @@ debugInfo fp cradle = unlines <$> do
           , "Config Location:     " ++ conf
           , "Cradle:              " ++ crdl
           , "Dependencies:        " ++ unwords deps
+          , "LibDir      :        " ++ show libDir
           ]
       CradleFail (CradleError deps ext stderr) ->
         return ["Cradle failed to load"

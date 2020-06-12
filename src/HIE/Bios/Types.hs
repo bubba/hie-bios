@@ -84,6 +84,9 @@ data CradleError = CradleError
   -- the loading error.
   }
   deriving (Show, Eq)
+-- data CradleError = CradleFileError FilePath (Maybe (Int, Int)) String
+--                  | CradleGeneralError ExitCode [String]
+--   deriving (Show)
 
 instance Exception CradleError where
 ----------------------------------------------------------------
@@ -104,4 +107,5 @@ data ComponentOptions = ComponentOptions {
   -- This is useful, because, sometimes, adding specific files
   -- changes the options that a Cradle may return, thus, needs reload
   -- as soon as these files are created.
+  , ghcLibDir :: Maybe FilePath
   } deriving (Eq, Ord, Show)

@@ -6,9 +6,8 @@ module HIE.Bios.Ghc.Api (
   , G.SuccessFlag(..)
   -- * Utility functions for running the GHC monad and implementing internal utilities
   , withGHC
-  , withGHC'
   , withGhcT
-  , getSystemLibDir
+  , getGhcLibDir
   , withDynFlags
   ) where
 
@@ -32,10 +31,13 @@ import HIE.Bios.Flags
 ----------------------------------------------------------------
 
 -- | Converting the 'Ghc' monad to the 'IO' monad. All exceptions are ignored and logged.
-withGHC :: FilePath  -- ^ A target file displayed in an error message.
+withGHC :: Cradle c  -- ^ The cradle to use for resolving the lib dir
+        -> FilePath  -- ^ A target file displayed in an error message.
         -> Ghc a -- ^ 'Ghc' actions created by the Ghc utilities.
         -> IO a
-withGHC file body = ghandle ignore $ withGHC' body
+withGHC cradle file body = do
+    libDir <- getGhcLibDir cradle
+    ghandle ignore (G.runGhc libDir body)
   where
     ignore :: SomeException -> IO a
     ignore e = do
@@ -43,18 +45,11 @@ withGHC file body = ghandle ignore $ withGHC' body
         Log.logm (show e)
         exitSuccess
 
--- | Run a Ghc monad computation with an automatically discovered libdir.
--- It calculates the lib dir by calling ghc with the `--print-libdir` flag.
-withGHC' :: Ghc a -> IO a
-withGHC' body = do
-    -- TODO: Why is this not using ghc-paths?
-    mlibdir <- getSystemLibDir
-    G.runGhc mlibdir body
-
-withGhcT :: (Exception.ExceptionMonad m, G.MonadIO m, Monad m) => GhcT m a -> m a
-withGhcT body = do
-  mlibdir <- G.liftIO $ getSystemLibDir
-  G.runGhcT mlibdir body
+withGhcT :: (Exception.ExceptionMonad m, G.MonadIO m, Monad m)
+         => Cradle c -> GhcT m a -> m a
+withGhcT cradle body = do
+  libDir <- liftIO $ getGhcLibDir cradle
+  G.runGhcT libDir body
 
 ----------------------------------------------------------------
 

@@ -53,10 +53,13 @@ data ActionName a
   deriving (Show, Eq, Ord, Functor)
 
 data CradleAction a = CradleAction {
-                      actionName :: ActionName a
+                        actionName :: ActionName a
                       -- ^ Name of the action.
                       , runCradle :: LoggingFunction -> FilePath -> IO (CradleLoadResult ComponentOptions)
                       -- ^ Options to compile the given file with.
+                      , getGhcPath :: IO (Maybe FilePath)
+                      -- ^ Try to find the path to the GHC that this cradle uses
+                      -- to compile stuff normally.
                       }
   deriving (Functor)
 
@@ -107,5 +110,4 @@ data ComponentOptions = ComponentOptions {
   -- This is useful, because, sometimes, adding specific files
   -- changes the options that a Cradle may return, thus, needs reload
   -- as soon as these files are created.
-  , ghcLibDir :: Maybe FilePath
   } deriving (Eq, Ord, Show)

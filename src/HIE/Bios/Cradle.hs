@@ -41,7 +41,7 @@ import Control.Monad
 import System.Info.Extra
 import Control.Monad.IO.Class
 import System.Environment
-import Control.Applicative ((<|>))
+import Control.Applicative ((<|>), optional)
 import System.IO.Temp
 import System.IO.Error (isPermissionError)
 import Data.List
@@ -130,8 +130,8 @@ addCradleDeps deps c =
       ca { runCradle = \l fp ->
             runCradle ca l fp
               >>= \case
-                CradleSuccess (ComponentOptions os' dir ds ld) ->
-                  pure $ CradleSuccess (ComponentOptions os' dir (ds `union` deps) ld)
+                CradleSuccess (ComponentOptions os' dir ds) ->
+                  pure $ CradleSuccess (ComponentOptions os' dir (ds `union` deps))
                 CradleFail err ->
                   pure $ CradleFail
                     (err { cradleErrorDependencies = cradleErrorDependencies err `union` deps })
@@ -220,9 +220,9 @@ defaultCradle cur_dir =
     { cradleRootDir = cur_dir
     , cradleOptsProg = CradleAction
         { actionName = Types.Default
-        , runCradle = \_ _ -> do
-            libDir <- dropWhileEnd isSpace <$> readProcess "ghc" ["--print-libdir"] ""
-            return (CradleSuccess (ComponentOptions [] cur_dir [] (Just libDir)))
+        , runCradle = \_ _ ->
+            return (CradleSuccess (ComponentOptions [] cur_dir []))
+        , getGhcPath = findExecutable "ghc"
         }
     }
 
@@ -236,6 +236,7 @@ noneCradle cur_dir =
     , cradleOptsProg = CradleAction
         { actionName = Types.None
         , runCradle = \_ _ -> return CradleNone
+        , getGhcPath = pure Nothing
         }
     }
 
@@ -249,6 +250,11 @@ multiCradle buildCustomCradle cur_dir cs =
     , cradleOptsProg = CradleAction
         { actionName = multiActionName
         , runCradle  = \l fp -> canonicalizePath fp >>= multiAction buildCustomCradle cur_dir cs l
+        , getGhcPath =
+            case cs of
+              [] -> return Nothing
+              ((_, cfg):_) -> getGhcPath $ cradleOptsProg $
+                getCradle buildCustomCradle (cfg, cur_dir)
         }
     }
   where
@@ -320,10 +326,9 @@ directCradle wdir args =
     { cradleRootDir = wdir
     , cradleOptsProg = CradleAction
         { actionName = Types.Direct
-        , runCradle = \_ _ -> do
-            -- TODO: make this a maybe
-            libDir <- dropWhileEnd isSpace <$> readProcess "ghc" ["--print-libdir"] ""
-            return (CradleSuccess (ComponentOptions args wdir [] (Just libDir)))
+        , runCradle = \_ _ ->
+            return (CradleSuccess (ComponentOptions args wdir []))
+        , getGhcPath = findExecutable "ghc"
         }
     }
 
@@ -339,6 +344,7 @@ biosCradle wdir biosCall biosDepsCall =
     , cradleOptsProg   = CradleAction
         { actionName = Types.Bios
         , runCradle = biosAction wdir biosCall biosDepsCall
+        , getGhcPath = findExecutable "ghc"
         }
     }
 
@@ -368,7 +374,7 @@ biosAction wdir bios bios_deps l fp = do
         -- delimited by newlines.
         -- Execute the bios action and add dependencies of the cradle.
         -- Removes all duplicates.
-  return $ makeCradleResult (ex, std, wdir, res, error "todo") deps
+  return $ makeCradleResult (ex, std, wdir, res) deps
 
 callableToProcess :: Callable -> Maybe String -> IO CreateProcess
 callableToProcess (Command shellCommand) file = do
@@ -391,6 +397,7 @@ cabalCradle wdir mc =
     , cradleOptsProg   = CradleAction
         { actionName = Types.Cabal
         , runCradle = cabalAction wdir mc
+        , getGhcPath = optional $ readProcess "cabal" ["v2-exec", "which", "--", "ghc"] ""
         }
     }
 
@@ -504,43 +511,40 @@ instance FromJSON CabalBuildInfoError where
     CabalBuildInfoError <$> (v .: "error") <*> (v .: "files")
 
 cabalAction :: FilePath -> Maybe String -> LoggingFunction -> FilePath -> IO (CradleLoadResult ComponentOptions)
-cabalAction work_dir mc l fp = do
-  libDir <- dropWhileEnd isSpace <$> readProcess "cabal" ["v2-exec", "ghc", "--", "--print-libdir"] ""
-  withCabalWrapperTool ("ghc", []) work_dir $ \wrapper_fp -> do
-    let cab_args = ["v2-repl", "--with-compiler", wrapper_fp, fromMaybe (fixTargetPath fp) mc]
-    (ex, output, stde, args) <-
-      readProcessWithOutputFile l work_dir (proc "cabal" cab_args)
-    deps <- cabalCradleDependencies work_dir
-    case processCabalWrapperArgs args of
-        Nothing -> pure $ CradleFail (CradleError deps ex
-                    ["Failed to parse result of calling cabal"
-                     , unlines output
-                     , unlines stde
-                     , unlines args])
-        Just (componentDir, final_args) -> pure $ makeCradleResult (ex, stde, componentDir, final_args, Just libDir) deps
+-- cabalAction work_dir mc l fp =
+  -- withCabalWrapperTool ("ghc", []) work_dir $ \wrapper_fp -> do
+  --   let cab_args = ["v2-repl", "--with-compiler", wrapper_fp, fromMaybe (fixTargetPath fp) mc]
+  --   (ex, output, stde, args) <-
+  --     readProcessWithOutputFile l work_dir (proc "cabal" cab_args)
+  --   deps <- cabalCradleDependencies work_dir
+  --   case processCabalWrapperArgs args of
+  --       Nothing -> pure $ CradleFail (CradleError deps ex
+  --                   ["Failed to parse result of calling cabal"
+  --                    , unlines output
+  --                    , unlines stde
+  --                    , unlines args])
+  --       Just (componentDir, final_args) -> pure $ makeCradleResult (ex, stde, componentDir, final_args) deps
 
+cabalAction work_dir _mc l fp = do
+  (ex, stdo, stde, _) <- readProcessWithOutputFile l work_dir "/Users/luke/Source/cabal/dist-newstyle/build/x86_64-osx/ghc-8.10.1/cabal-install-3.3.0.0/x/cabal/build/cabal/cabal" $ ["show-build-info", "--pick-first-target", fixTargetPath fp]
+  if ex == ExitSuccess
+    then case eitherDecode (BS.pack (unlines stdo)) :: Either String CabalBuildInfo of
+      Right bi -> do
+        let comp = head (components bi) -- since we are passing a single file to show build info, we only want the flags needed for one of its possible components
+            srcDir = componentSrcDir comp
+            modules = componentModules comp
+            args = (removeVerbosityOpts $ removeRTS $ componentCompilerArgs comp) <> modules
+            deps = dependentFiles bi <> [srcDir </> componentCabalFile comp]
 
+        libDir <- dropWhileEnd isSpace <$> readProcess (path $ compilerInfo bi) ["--print-libdir"] ""
 
--- cabalAction work_dir _mc l fp = do
---   (ex, stdo, stde, _) <- readProcessWithOutputFile l work_dir "/Users/luke/Source/cabal/dist-newstyle/build/x86_64-osx/ghc-8.10.1/cabal-install-3.3.0.0/x/cabal/build/cabal/cabal" $ ["show-build-info", "--pick-first-target", fixTargetPath fp]
---   if ex == ExitSuccess
---     then case eitherDecode (BS.pack (unlines stdo)) :: Either String CabalBuildInfo of
---       Right bi -> do
---         let comp = head (components bi) -- since we are passing a single file to show build info, we only want the flags needed for one of its possible components
---             srcDir = componentSrcDir comp
---             modules = componentModules comp
---             args = (removeVerbosityOpts $ removeRTS $ componentCompilerArgs comp) <> modules
---             deps = dependentFiles bi <> [srcDir </> componentCabalFile comp]
-
---             libDir <- dropWhileEnd isSpace <$> readProcess (path $ compilerInfo bi) ["--print-libdir"] ""
-
---         pure $ makeCradleResult (ex, stde, srcDir, args, libDir) deps
---       Left   e   -> pure $ CradleFail (CradleGeneralError ex ["Couldn't parse cabal show-build-info", e])
---     else
---       case eitherDecode (BS.pack (unlines stdo)) :: Either String CabalBuildInfoError of
---         Right (CabalBuildInfoError msg (file:_)) -> pure $ CradleFail (CradleFileError file Nothing msg)
---         Right (CabalBuildInfoError msg []) -> pure $ CradleFail (CradleGeneralError ex [msg])
---         Left _ -> mungeError stde ex
+        pure $ makeCradleResult (ex, stde, srcDir, args, libDir) deps
+      Left   e   -> pure $ CradleFail (CradleGeneralError ex ["Couldn't parse cabal show-build-info", e])
+    else
+      case eitherDecode (BS.pack (unlines stdo)) :: Either String CabalBuildInfoError of
+        Right (CabalBuildInfoError msg (file:_)) -> pure $ CradleFail (CradleFileError file Nothing msg)
+        Right (CabalBuildInfoError msg []) -> pure $ CradleFail (CradleGeneralError ex [msg])
+        Left _ -> mungeError stde ex
   where
     -- Need to make relative on Windows, due to a Cabal bug with how it
     -- parses file targets with a C: drive in it
@@ -587,6 +591,8 @@ stackCradle wdir mc =
     , cradleOptsProg   = CradleAction
         { actionName = Types.Stack
         , runCradle = stackAction wdir mc
+        , getGhcPath = optional $
+            readProcess "stack" ["exec", "which", "--", "ghc"] ""
         }
     }
 
@@ -598,8 +604,6 @@ stackCradleDependencies wdir = do
 stackAction :: FilePath -> Maybe String -> LoggingFunction -> FilePath -> IO (CradleLoadResult ComponentOptions)
 stackAction work_dir mc l _fp = do
   let ghcProcArgs = ("stack", ["exec", "ghc", "--"])
-
-  libDir <- dropWhileEnd isSpace <$> readProcess "stack" ["exec", "ghc", "--", "--print-libdir"] ""
 
   -- Same wrapper works as with cabal
   withCabalWrapperTool ghcProcArgs work_dir $ \wrapper_fp -> do
@@ -620,7 +624,7 @@ stackAction work_dir mc l _fp = do
                      ++ args)
 
         Just (componentDir, ghc_args) ->
-          makeCradleResult (combineExitCodes [ex1, ex2], stde ++ stdr, componentDir, ghc_args ++ pkg_ghc_args, Just libDir) deps
+          makeCradleResult (combineExitCodes [ex1, ex2], stde ++ stdr, componentDir, ghc_args ++ pkg_ghc_args) deps
 
 combineExitCodes :: [ExitCode] -> ExitCode
 combineExitCodes = foldr go ExitSuccess
@@ -785,10 +789,10 @@ readProcessWithOutputFile l work_dir cp = do
 
       hieBiosOutput = "HIE_BIOS_OUTPUT"
 
-makeCradleResult :: (ExitCode, [String], FilePath, [String], Maybe FilePath) -> [FilePath] -> CradleLoadResult ComponentOptions
-makeCradleResult (ex, err, componentDir, gopts, libDir) deps =
+makeCradleResult :: (ExitCode, [String], FilePath, [String]) -> [FilePath] -> CradleLoadResult ComponentOptions
+makeCradleResult (ex, err, componentDir, gopts) deps =
   case ex of
     ExitFailure _ -> CradleFail (CradleError deps ex err)
     _ ->
-        let compOpts = ComponentOptions gopts componentDir deps libDir
+        let compOpts = ComponentOptions gopts componentDir deps
         in CradleSuccess compOpts

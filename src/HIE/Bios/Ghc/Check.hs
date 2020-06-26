@@ -16,6 +16,7 @@ import Control.Monad.IO.Class
 import System.IO.Unsafe (unsafePerformIO)
 import qualified HIE.Bios.Ghc.Gap as Gap
 
+import qualified DynFlags as G
 import qualified GHC as G
 import HIE.Bios.Environment
 
@@ -28,7 +29,7 @@ checkSyntax :: Show a
             -> [FilePath]  -- ^ The target files.
             -> IO String
 checkSyntax _      []    = return ""
-checkSyntax cradle files = withGhcT $ do
+checkSyntax cradle files = withGhcT cradle $ do
     Log.debugm $ "Cradle: " ++ show cradle
     res <- initializeFlagsWithCradle (head files) cradle
     case res of
@@ -53,7 +54,9 @@ checkSyntax cradle files = withGhcT $ do
 check :: (GhcMonad m)
       => [FilePath]  -- ^ The target files.
       -> m (Either String String)
-check fileNames = withLogger setAllWarningFlags $ setTargetFiles (map dup fileNames)
+check fileNames = do
+  topDir <- G.topDir <$> G.getDynFlags
+  withLogger (setAllWarningFlags topDir) $ setTargetFiles (map dup fileNames)
 
 dup :: a -> (a, a)
 dup x = (x, x)
@@ -61,14 +64,13 @@ dup x = (x, x)
 ----------------------------------------------------------------
 
 -- | Set 'DynFlags' equivalent to "-Wall".
-setAllWarningFlags :: DynFlags -> DynFlags
-setAllWarningFlags df = df { warningFlags = allWarningFlags }
+setAllWarningFlags :: FilePath -> DynFlags -> DynFlags
+setAllWarningFlags topDir df = df { warningFlags = allWarningFlags topDir }
 
 {-# NOINLINE allWarningFlags #-}
-allWarningFlags :: Gap.WarnFlags
-allWarningFlags = unsafePerformIO $ do
-    mlibdir <- getSystemLibDir
-    G.runGhcT mlibdir $ do
+allWarningFlags :: FilePath -> Gap.WarnFlags
+allWarningFlags topDir = unsafePerformIO $
+    G.runGhcT (Just topDir) $ do
         df <- G.getSessionDynFlags
         (df', _) <- addCmdOpts ["-Wall"] df
         return $ G.warningFlags df'

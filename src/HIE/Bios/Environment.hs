@@ -1,14 +1,16 @@
 {-# LANGUAGE RecordWildCards, CPP #-}
-module HIE.Bios.Environment (initSession, getSystemLibDir, makeDynFlagsAbsolute, getCacheDir, addCmdOpts) where
+module HIE.Bios.Environment (initSession, getGhcLibDir, makeDynFlagsAbsolute, getCacheDir, addCmdOpts) where
 
 import CoreMonad (liftIO)
-import GHC (DynFlags(..), GhcLink(..), HscTarget(..), GhcMonad)
+import GHC (GhcMonad)
 import qualified GHC as G
 import qualified DriverPhases as G
 import qualified Util as G
 import DynFlags
 
+import Control.Applicative
 import Control.Monad (void)
+import Control.Monad.Trans.Maybe
 
 import System.Process (readProcess)
 import System.Directory
@@ -20,8 +22,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Base16
 import Data.List
 import Data.Char (isSpace)
-import Control.Applicative ((<|>))
-import Text.ParserCombinators.ReadP
+import Text.ParserCombinators.ReadP hiding (optional)
 import HIE.Bios.Types
 import HIE.Bios.Ghc.Gap
 
@@ -54,12 +55,11 @@ initSession  ComponentOptions {..} = do
 ----------------------------------------------------------------
 
 -- | Obtain the directory for system libraries.
-getSystemLibDir :: IO (Maybe FilePath)
-getSystemLibDir = do
-    res <- readProcess "ghc" ["--print-libdir"] []
-    return $ case res of
-        ""   -> Nothing
-        dirn -> Just (init dirn)
+getGhcLibDir :: Cradle a -> IO (Maybe FilePath)
+getGhcLibDir cradle = runMaybeT $ do
+    ghc <- MaybeT $ getGhcPath (cradleOptsProg cradle)
+    libDir <- MaybeT $ optional $ readProcess ghc ["--print-libdir"] []
+    return (dropWhileEnd isSpace libDir)
 
 ----------------------------------------------------------------
 
